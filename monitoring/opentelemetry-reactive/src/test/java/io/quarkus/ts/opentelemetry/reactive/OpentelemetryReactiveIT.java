@@ -10,14 +10,16 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.text.IsEqualIgnoringCase.equalToIgnoringCase;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.http.HttpStatus;
 import org.hamcrest.Matcher;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import io.quarkus.test.bootstrap.JaegerService;
@@ -69,8 +71,8 @@ public class OpentelemetryReactiveIT {
             ArrayList<String> spanKinds = resp.body().path(
                     "data[0].spans.findAll { it.operationName == '%s' }.tags.flatten().findAll { it.key == 'span.kind' }.value.flatten()",
                     "GET /hello");
-            Assertions.assertTrue(spanKinds.contains("client"));
-            Assertions.assertTrue(spanKinds.contains("server"));
+            assertTrue(spanKinds.contains("client"));
+            assertTrue(spanKinds.contains("server"));
         });
     }
 
@@ -85,6 +87,35 @@ public class OpentelemetryReactiveIT {
             assertSecurityEventsAndLogsPresent();
         });
 
+    }
+
+    @Test
+    public void testExemplars() {
+        whenDoPingPongRequest();
+        whenDoPingPongRequest();
+        await().ignoreExceptions().atMost(30, TimeUnit.SECONDS)
+                .pollInterval(5, TimeUnit.SECONDS)
+                .untilAsserted(() -> {
+                    Response response = pingservice.given().get("/q/metrics");
+                    assertEquals(HttpStatus.SC_OK, response.statusCode());
+                    final String metricName = "http_server_requests_seconds_count";
+                    final String body = response.body().asString();
+                    String metric = Arrays.stream(body.split("\n"))
+                            .filter(line -> line.startsWith(metricName))
+                            .findFirst()
+                            .orElseThrow(() -> new AssertionError(metricName + " was not found in " + body));
+                    String[] content = metric.split(" ");
+                    assertEquals(6, content.length, "Some values are missing from " + metric);
+                    assertEquals("""
+                            http_server_requests_seconds_count{method="GET",outcome="SUCCESS",status="200",uri="/ping/pong"}
+                            """.strip(), content[0]);
+
+                    assertEquals("2.0", content[1], "Amount of events is wrong");
+                    assertEquals("#", content[2], "Unexpected exemplar separator!");
+                    assertTrue(content[3].contains("span_id"), "Exemplar doesn't contain span ID");
+                    assertTrue(content[3].contains("trace_id"), "Exemplar doesn't contain trace ID");
+                    assertEquals("1.0", content[4], "Unexpected exemplar value!");
+                });
     }
 
     @Test
@@ -108,7 +139,7 @@ public class OpentelemetryReactiveIT {
                 .extract()
                 .body()
                 .asString());
-        Assertions.assertTrue(invocations >= 2);
+        assertTrue(invocations >= 2);
     }
 
     public void whenDoPingPongRequest() {
